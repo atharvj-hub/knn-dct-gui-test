@@ -7,6 +7,72 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 
+METRIC_LABELS = {
+    "accuracy": "Accuracy",
+    "precision": "Precision",
+    "recall": "Recall",
+    "f1_score": "F1 Score",
+}
+
+
+def plot_all_comparisons(results: dict[str, dict[str, object]]) -> None:
+    if importlib.util.find_spec("matplotlib") is None:
+        messagebox.showerror(
+            "Missing Dependency",
+            "matplotlib is required to show comparison charts. Install it with: pip install matplotlib",
+        )
+        return
+
+    import matplotlib.pyplot as plt
+
+    model_names = list(results.keys())
+    metric_keys = list(METRIC_LABELS.keys())
+    metric_values = {
+        metric: [float(results[model_name][metric]) for model_name in model_names]
+        for metric in metric_keys
+    }
+
+    figure, axes = plt.subplots(1, 2, figsize=(13, 5))
+    metric_axis, matrix_axis = axes
+
+    x_positions = range(len(model_names))
+    bar_width = 0.18
+
+    for index, metric in enumerate(metric_keys):
+        offsets = [position + (index - 1.5) * bar_width for position in x_positions]
+        metric_axis.bar(offsets, metric_values[metric], width=bar_width, label=METRIC_LABELS[metric])
+
+    metric_axis.set_title("Model Metric Comparison")
+    metric_axis.set_xticks(list(x_positions))
+    metric_axis.set_xticklabels(model_names)
+    metric_axis.set_ylim(0, 1.05)
+    metric_axis.set_ylabel("Score")
+    metric_axis.legend(fontsize=9)
+    metric_axis.grid(axis="y", linestyle="--", alpha=0.3)
+
+    summary_lines = []
+    for model_name in model_names:
+        summary_lines.append(model_name)
+        summary_lines.append(str(results[model_name]["confusion_matrix"]))
+        summary_lines.append("")
+
+    matrix_axis.axis("off")
+    matrix_axis.set_title("Stored Confusion Matrices")
+    matrix_axis.text(
+        0,
+        1,
+        "\n".join(summary_lines).strip(),
+        va="top",
+        ha="left",
+        family="monospace",
+        fontsize=10,
+    )
+
+    figure.suptitle("KNN vs Decision Tree Comparison", fontsize=14)
+    figure.tight_layout()
+    plt.show()
+
+
 class ModelComparisonApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -18,6 +84,7 @@ class ModelComparisonApp:
         self.feature_names: list[str] = []
         self.X: list[list[float]] | None = None
         self.y: list[str] | None = None
+        self.results: dict[str, dict[str, object]] | None = None
 
         self._build_styles()
         self._build_layout()
@@ -38,7 +105,7 @@ class ModelComparisonApp:
         ttk.Label(main_frame, text="Model Comparison Dashboard", style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             main_frame,
-            text="Load a CSV dataset, then train KNN and Decision Tree models for a quick comparison.",
+            text="Load a CSV dataset, train once, then review the saved KNN and Decision Tree comparison.",
             style="Info.TLabel",
         ).pack(anchor="w", pady=(6, 16))
 
@@ -52,8 +119,12 @@ class ModelComparisonApp:
         )
         self.dataset_label.pack(side="left", fill="x", expand=True)
 
-        ttk.Button(controls, text="Load Dataset", command=self.load_dataset, style="Primary.TButton").pack(side="right", padx=(8, 0))
-        ttk.Button(controls, text="Train Models", command=self.train_models, style="Secondary.TButton").pack(side="right")
+        button_frame = ttk.Frame(main_frame, style="Card.TFrame")
+        button_frame.pack(fill="x", pady=(0, 16))
+
+        ttk.Button(button_frame, text="Load Dataset", command=self.load_dataset, style="Primary.TButton").pack(side="right", padx=(8, 0))
+        ttk.Button(button_frame, text="Train Models", command=self.train_models, style="Secondary.TButton").pack(side="right", padx=(8, 0))
+        ttk.Button(button_frame, text="Show Comparison", command=self.show_comparison, style="Secondary.TButton").pack(side="right")
 
         self.output_text = tk.Text(
             main_frame,
@@ -106,6 +177,7 @@ class ModelComparisonApp:
         self.y = [row[-1] for row in data_rows]
         self.feature_names = header[:-1]
         self.dataset_path = file_path
+        self.results = None
 
         self.dataset_label.config(text=f"Dataset: {file_path}")
         self.clear_output()
@@ -114,6 +186,7 @@ class ModelComparisonApp:
         self.display_output(f"Feature columns: {', '.join(self.feature_names)}\n")
         self.display_output(f"Feature shape: ({len(self.X)}, {len(self.feature_names)})\n")
         self.display_output(f"Target samples: {len(self.y)}\n")
+        self.display_output("\nTraining results cleared. Train models to generate a new comparison.\n")
 
     def train_models(self) -> None:
         if self.X is None or self.y is None:
@@ -131,40 +204,35 @@ class ModelComparisonApp:
             )
             return
 
-        from sklearn.metrics import accuracy_score, classification_report
-        from sklearn.model_selection import train_test_split
-        from sklearn.neighbors import KNeighborsClassifier
-        from sklearn.tree import DecisionTreeClassifier
+        from model import train_and_evaluate
 
-        X_train, X_test, y_train, y_test = train_test_split(
-            self.X,
-            self.y,
-            test_size=0.2,
-            random_state=42,
-            stratify=self.y,
-        )
-
-        models = {
-            "K-Nearest Neighbors": KNeighborsClassifier(),
-            "Decision Tree": DecisionTreeClassifier(random_state=42),
-        }
+        self.results = train_and_evaluate(self.X, self.y)
 
         self.clear_output()
         dataset_name = str(self.dataset_path) if self.dataset_path else "In-memory dataset"
-        self.display_output(f"Training models using: {dataset_name}\n")
-        self.display_output(f"Training samples: {len(X_train)} | Test samples: {len(X_test)}\n\n")
+        self.display_output(f"Training models using: {dataset_name}\n\n")
 
-        for model_name, model in models.items():
-            model.fit(X_train, y_train)
-            predictions = model.predict(X_test)
-            accuracy = accuracy_score(y_test, predictions)
-            report = classification_report(y_test, predictions)
-
+        for model_name, metrics in self.results.items():
             self.display_output(f"{model_name}\n")
-            self.display_output(f"Accuracy: {accuracy:.4f}\n")
-            self.display_output("Classification Report:\n")
-            self.display_output(f"{report}\n")
+            self.display_output(f"Accuracy: {float(metrics['accuracy']):.4f}\n")
+            self.display_output(f"Precision: {float(metrics['precision']):.4f}\n")
+            self.display_output(f"Recall: {float(metrics['recall']):.4f}\n")
+            self.display_output(f"F1 Score: {float(metrics['f1_score']):.4f}\n")
+            self.display_output("Confusion Matrix:\n")
+            self.display_output(f"{metrics['confusion_matrix']}\n")
             self.display_output("-" * 70 + "\n")
+
+        self.display_output("Use 'Show Comparison' to visualize these stored results without retraining.\n")
+
+    def show_comparison(self) -> None:
+        if self.results is None:
+            messagebox.showerror(
+                "No Results Available",
+                "Train the models first to generate comparison results.",
+            )
+            return
+
+        plot_all_comparisons(self.results)
 
 
 def main() -> None:
@@ -176,7 +244,8 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
-def run_app():
+
+def run_app() -> None:
     root = tk.Tk()
     ModelComparisonApp(root)
-    root.mainloop()    
+    root.mainloop()
